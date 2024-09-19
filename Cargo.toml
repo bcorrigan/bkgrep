@@ -1,0 +1,14 @@
+[package]
+name = "bkgrep"
+version = "0.1.0"
+authors = ["bcorrigan <b.j.corrigan@gmail.com>"]
+license="GPL-3.0-or-later"
+edition = "2021"
+
+[dependencies]
+epub = { git = "https://github.com/danigm/epub-rs" }
+clap = {version = "^4", features=["derive"]}
+rayon = "^1.5"
+walkdir = "^2"
+itertools = "^0.13"
+
