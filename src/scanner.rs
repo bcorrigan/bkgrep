@@ -61,8 +61,8 @@ impl Scanner {
 
                             if book_batch.len() % 10000 == 0 {
                                 self.process_batch(&seen_books, &book_batch);
+                                book_batch.clear();
                             }
-                            book_batch.clear();
                         }
                     }
                     Err(e) => {
@@ -73,6 +73,7 @@ impl Scanner {
             }
             if book_batch.len() > 0 {
                 self.process_batch(&seen_books, &book_batch);
+                book_batch.clear();
             }
         }
 
