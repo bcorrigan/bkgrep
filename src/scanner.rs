@@ -13,9 +13,10 @@ use std::time::SystemTime;
 use walkdir::WalkDir;
 
 //most essential book details for dedupping
+#[derive(Clone)]
 struct Book {
-    location: String //path to the book
-    size: i64 //how many bytes large is the book
+    location: String, //path to the book
+    size: i64,        //how many bytes large is the book
 }
 
 pub fn scan_dirs(dirs: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
@@ -27,10 +28,10 @@ pub fn scan_dirs(dirs: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // all books seen so far. For now store the location and fngers crossed don't run out of memory
-    let seen_books: RwLock<HashMap<i64, Book >> = std::sync::RwLock::new(HashMap::new());
+    let seen_books: RwLock<HashMap<i64, Book>> = std::sync::RwLock::new(HashMap::new());
     // the "best" duplicate books - that we want to *keep*
     //The first dup we find - we determine best, print other as dup, and put the best in here
-    //when we detect anoter dup, we promote or relegate as necessary 
+    //when we detect anoter dup, we promote or relegate as necessary
     let best_dup_books: RwLock<HashMap<i64, Book>> = std::sync::RwLock::new(HashMap::new());
     let mut book_batch = vec![];
 
@@ -63,15 +64,41 @@ pub fn scan_dirs(dirs: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn process_batch(seen_books: &RwLock<HashMap<i64, Book>>, dups: &RwLock<HashMap<i64, Book>>, book_batch: &Vec<String>) {
+fn process_batch(
+    seen_books: &RwLock<HashMap<i64, Book>>,
+    dups: &RwLock<HashMap<i64, Book>>,
+    book_batch: &Vec<String>,
+) {
     let bms: Vec<BookMetadata> = book_batch
         .par_iter()
         .map(|book_path| match parse_epub(book_path) {
             Ok(bm) => {
+                let new_bk = Book {
+                    location: book_path.clone(),
+                    size: bm.filesize,
+                };
                 if !seen_books.read().unwrap().contains_key(&bm.id) {
-                    seen_books.write().unwrap().insert(bm.id, Book{ location: book_path.clone(), size:bm.filesize });
+                    seen_books.write().unwrap().insert(bm.id, new_bk);
                     Some(bm)
                 } else {
+                    //DUPLICATE DETECTED
+                    if !dups.read().unwrap().contains_key(&bm.id) {
+                        let dups_unlocked = dups.read().unwrap();
+                        let old_dup_bk = dups_unlocked.get(&bm.id).unwrap();
+                        if better_dup(old_dup_bk, &new_bk) {
+                            dups.write().unwrap().insert(bm.id, new_bk);
+                        }
+                    } else {
+                        let seen_unlocked = seen_books.read().unwrap();
+                        let old_bk = seen_unlocked.get(&bm.id).unwrap().clone();
+                        drop(seen_unlocked);
+                        if better_dup(&old_bk, &new_bk) {
+                            dups.write().unwrap().insert(bm.id, new_bk);
+                        } else {
+                            dups.write().unwrap().insert(bm.id, old_bk);
+                        }
+                    }
+
                     None
                 }
             }
@@ -84,6 +111,14 @@ fn process_batch(seen_books: &RwLock<HashMap<i64, Book>>, dups: &RwLock<HashMap<
         .filter(|bmo| bmo.is_some())
         .map(|bms| bms.unwrap())
         .collect();
+}
+
+fn better_dup(old: &Book, new: &Book) -> bool {
+    if new.size > old.size {
+        true
+    } else {
+        false
+    }
 }
 
 fn parse_epub(book_loc: &str) -> Result<BookMetadata, Box<dyn Error>> {
