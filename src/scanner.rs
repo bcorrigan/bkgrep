@@ -8,8 +8,16 @@ use std::fs;
 use std::fs::File;
 use std::path::Path;
 use std::process;
+use std::sync::RwLock;
 use std::time::SystemTime;
 use walkdir::WalkDir;
+
+//most essential book details for dedupping
+struct Book {
+    location: String //path to the book
+    size: i64 //how many bytes large is the book
+}
+
 pub fn scan_dirs(dirs: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     for directory in &dirs {
         if !Path::new(&directory).exists() {
@@ -18,8 +26,12 @@ pub fn scan_dirs(dirs: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let seen_bookids = std::sync::RwLock::new(HashSet::new());
-    let mut processed: u64 = 0;
+    // all books seen so far. For now store the location and fngers crossed don't run out of memory
+    let seen_books: RwLock<HashMap<i64, Book >> = std::sync::RwLock::new(HashMap::new());
+    // the "best" duplicate books - that we want to *keep*
+    //The first dup we find - we determine best, print other as dup, and put the best in here
+    //when we detect anoter dup, we promote or relegate as necessary 
+    let best_dup_books: RwLock<HashMap<i64, Book>> = std::sync::RwLock::new(HashMap::new());
     let mut book_batch = vec![];
 
     for dir in &dirs {
@@ -31,29 +43,8 @@ pub fn scan_dirs(dirs: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
                     {
                         book_batch.push(l.path().display().to_string());
 
-                        processed += 1;
-
-                        if processed % 10000 == 0 || processed >= total_books {
-                            let bms: Vec<BookMetadata> = book_batch
-                                .par_iter()
-                                .map(|book_path| match parse_epub(book_path) {
-                                    Ok(bm) => {
-                                        if !seen_bookids.read().unwrap().contains(&bm.id) {
-                                            seen_bookids.write().unwrap().insert(bm.id);
-                                            Some(bm)
-                                        } else {
-                                            None
-                                        }
-                                    }
-                                    Err(err) => {
-                                        eprintln!("Error with {}: {:?}", book_path, err);
-                                        println!("ERROR:{}", book_path);
-                                        None
-                                    }
-                                })
-                                .filter(|bmo| bmo.is_some())
-                                .map(|bms| bms.unwrap())
-                                .collect();
+                        if book_batch.len() % 10000 == 0 {
+                            process_batch(&seen_books, &best_dup_books, &book_batch);
                         }
                         book_batch.clear();
                     }
@@ -64,9 +55,35 @@ pub fn scan_dirs(dirs: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+        if book_batch.len() > 0 {
+            process_batch(&seen_books, &best_dup_books, &book_batch);
+        }
     }
 
     Ok(())
+}
+
+fn process_batch(seen_books: &RwLock<HashMap<i64, Book>>, dups: &RwLock<HashMap<i64, Book>>, book_batch: &Vec<String>) {
+    let bms: Vec<BookMetadata> = book_batch
+        .par_iter()
+        .map(|book_path| match parse_epub(book_path) {
+            Ok(bm) => {
+                if !seen_books.read().unwrap().contains_key(&bm.id) {
+                    seen_books.write().unwrap().insert(bm.id, Book{ location: book_path.clone(), size:bm.filesize });
+                    Some(bm)
+                } else {
+                    None
+                }
+            }
+            Err(err) => {
+                eprintln!("Error with {}: {:?}", book_path, err);
+                println!("ERROR:{}", book_path);
+                None
+            }
+        })
+        .filter(|bmo| bmo.is_some())
+        .map(|bms| bms.unwrap())
+        .collect();
 }
 
 fn parse_epub(book_loc: &str) -> Result<BookMetadata, Box<dyn Error>> {
