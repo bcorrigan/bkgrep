@@ -11,6 +11,6 @@ clap = {version = "^4", features=["derive"]}
 rayon = "^1.5"
 walkdir = "^2"
 itertools = "^0.13"
-lingua = {version = "^1.6", default-features=false, features=["english"]}
+lingua = "^1.6"
 
 

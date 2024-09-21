@@ -12,10 +12,9 @@ use std::sync::RwLock;
 use std::time::SystemTime;
 use walkdir::WalkDir;
 
-use lingua::Language::English;
+use lingua::Language::*;
 use lingua::LanguageDetector;
 use lingua::LanguageDetectorBuilder;
-
 //most essential book details for dedupping
 #[derive(Clone)]
 struct Book {
@@ -23,7 +22,7 @@ struct Book {
     size: i64,        //how many bytes large is the book
 }
 
-struct Scanner {
+pub struct Scanner {
     dirs: Vec<String>,
     detector: LanguageDetector,
 }
@@ -32,7 +31,7 @@ impl Scanner {
     pub fn new(dirs: Vec<String>) -> Self {
         Scanner {
             dirs,
-            detector: LanguageDetectorBuilder::from_languages(&[English])
+            detector: LanguageDetectorBuilder::from_all_languages()
                 .with_minimum_relative_distance(0.9)
                 .build(),
         }
@@ -85,7 +84,7 @@ impl Scanner {
             .par_iter()
             .map(|book_path| match parse_epub(book_path) {
                 Ok(bm) => {
-                    if self.is_english(bm) {
+                    if self.is_english(&bm) {
                         let new_bk = Book {
                             location: book_path.clone(),
                             size: bm.filesize,
@@ -125,16 +124,17 @@ impl Scanner {
 
     //the potential issue here is there's a difference between "yes tis is definitely english" and "this is definitely NOT english"
     //books with eg ambiguous title and no description won't be detected!
-    // so possibly way around that is to detect using ALL languages ?
+    //That's why we must detect using using ALL languages
     fn is_english(&self, bm: &BookMetadata) -> bool {
-        return self
-            .detector
-            .detect_language_of(
-                bm.title.as_ref().unwrap_or(&"".to_string()).to_owned()
-                    + " "
-                    + bm.description.as_ref().unwrap_or(&"".to_string()),
-            )
-            .is_some();
+        match self.detector.detect_language_of(
+            bm.title.as_ref().unwrap_or(&"".to_string()).to_owned()
+                + " "
+                + bm.description.as_ref().unwrap_or(&"".to_string()),
+        ) {
+            Some(English) => true,
+            Some(_) => false,
+            None => true,
+        }
     }
 
     fn better_dup(old: &Book, new: &Book) -> bool {

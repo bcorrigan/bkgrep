@@ -1,10 +1,9 @@
-use clap::{Parser, Subcommand};
 mod scanner;
+use clap::{Parser, Subcommand};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::error::Error;
 use std::hash::{Hash, Hasher};
-
 pub struct BookMetadata {
     id: i64,
     title: Option<String>,
@@ -57,5 +56,7 @@ struct Cli {
 }
 
 fn main() {
-    println!("Hello, world!");
+    let cli = Cli::parse();
+    let scanner = scanner::Scanner::new(cli.dirs);
+    scanner.scan_dirs();
 }
