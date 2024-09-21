@@ -12,6 +12,10 @@ use std::sync::RwLock;
 use std::time::SystemTime;
 use walkdir::WalkDir;
 
+use lingua::Language::English;
+use lingua::LanguageDetector;
+use lingua::LanguageDetectorBuilder;
+
 //most essential book details for dedupping
 #[derive(Clone)]
 struct Book {
@@ -19,93 +23,128 @@ struct Book {
     size: i64,        //how many bytes large is the book
 }
 
-pub fn scan_dirs(dirs: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
-    for directory in &dirs {
-        if !Path::new(&directory).exists() {
-            eprintln!("Directory {} does not exist.", &directory);
-            process::exit(3);
-        }
-    }
-
-    // all books seen so far. For now store the location and fngers crossed don't run out of memory
-    let seen_books: RwLock<HashMap<i64, Book>> = std::sync::RwLock::new(HashMap::new());
-    let mut book_batch = vec![];
-
-    for dir in &dirs {
-        let walker = WalkDir::new(&dir).into_iter();
-        for entry in walker {
-            match entry {
-                Ok(l) => {
-                    if l.path().display().to_string().ends_with(".epub") && l.file_type().is_file()
-                    {
-                        book_batch.push(l.path().display().to_string());
-
-                        if book_batch.len() % 10000 == 0 {
-                            process_batch(&seen_books, &book_batch);
-                        }
-                        book_batch.clear();
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Unrecoverable error while scanning books:{}", e);
-                    process::exit(1);
-                }
-            }
-        }
-        if book_batch.len() > 0 {
-            process_batch(&seen_books, &book_batch);
-        }
-    }
-
-    Ok(())
+struct Scanner {
+    dirs: Vec<String>,
+    detector: LanguageDetector,
 }
 
-fn process_batch(seen_books: &RwLock<HashMap<i64, Book>>, book_batch: &Vec<String>) {
-    let bms: Vec<BookMetadata> = book_batch
-        .par_iter()
-        .map(|book_path| match parse_epub(book_path) {
-            Ok(bm) => {
-                let new_bk = Book {
-                    location: book_path.clone(),
-                    size: bm.filesize,
-                };
-                if !seen_books.read().unwrap().contains_key(&bm.id) {
-                    seen_books.write().unwrap().insert(bm.id, new_bk);
-                    Some(bm)
-                } else {
-                    //DUPLICATE DETECTED
-                    let seen_unlocked = seen_books.read().unwrap();
-                    let old_bk = seen_unlocked.get(&bm.id).unwrap().clone();
-                    drop(seen_unlocked);
-                    if better_dup(&old_bk, &new_bk) {
-                        println!("DUP:{}", old_bk.location);
-                        seen_books.write().unwrap().insert(bm.id, new_bk);
-                    } else {
-                        println!("DUP:{}", new_bk.location);
-                    }
+impl Scanner {
+    pub fn new(dirs: Vec<String>) -> Self {
+        Scanner {
+            dirs,
+            detector: LanguageDetectorBuilder::from_languages(&[English])
+                .with_minimum_relative_distance(0.9)
+                .build(),
+        }
+    }
 
+    pub fn scan_dirs(&self) -> Result<(), Box<dyn std::error::Error>> {
+        for directory in &self.dirs {
+            if !Path::new(&directory).exists() {
+                eprintln!("Directory {} does not exist.", &directory);
+                process::exit(3);
+            }
+        }
+
+        // all books seen so far. For now store the location and fngers crossed don't run out of memory
+        let seen_books: RwLock<HashMap<i64, Book>> = std::sync::RwLock::new(HashMap::new());
+        let mut book_batch = vec![];
+
+        for dir in &self.dirs {
+            let walker = WalkDir::new(&dir).into_iter();
+            for entry in walker {
+                match entry {
+                    Ok(l) => {
+                        if l.path().display().to_string().ends_with(".epub")
+                            && l.file_type().is_file()
+                        {
+                            book_batch.push(l.path().display().to_string());
+
+                            if book_batch.len() % 10000 == 0 {
+                                self.process_batch(&seen_books, &book_batch);
+                            }
+                            book_batch.clear();
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Unrecoverable error while scanning books:{}", e);
+                        process::exit(1);
+                    }
+                }
+            }
+            if book_batch.len() > 0 {
+                self.process_batch(&seen_books, &book_batch);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn process_batch(&self, seen_books: &RwLock<HashMap<i64, Book>>, book_batch: &Vec<String>) {
+        book_batch
+            .par_iter()
+            .map(|book_path| match parse_epub(book_path) {
+                Ok(bm) => {
+                    if self.is_english(bm) {
+                        let new_bk = Book {
+                            location: book_path.clone(),
+                            size: bm.filesize,
+                        };
+                        if !seen_books.read().unwrap().contains_key(&bm.id) {
+                            seen_books.write().unwrap().insert(bm.id, new_bk);
+                            Some(bm)
+                        } else {
+                            //DUPLICATE DETECTED
+                            let seen_unlocked = seen_books.read().unwrap();
+                            let old_bk = seen_unlocked.get(&bm.id).unwrap().clone();
+                            drop(seen_unlocked);
+                            if Self::better_dup(&old_bk, &new_bk) {
+                                println!("DUP:{}", old_bk.location);
+                                seen_books.write().unwrap().insert(bm.id, new_bk);
+                            } else {
+                                println!("DUP:{}", new_bk.location);
+                            }
+
+                            None
+                        }
+                    } else {
+                        println!("FRN:{}", book_path);
+                        None
+                    }
+                }
+                Err(err) => {
+                    eprintln!("Error with {}: {:?}", book_path, err);
+                    println!("ERROR:{}", book_path);
                     None
                 }
-            }
-            Err(err) => {
-                eprintln!("Error with {}: {:?}", book_path, err);
-                println!("ERROR:{}", book_path);
-                None
-            }
-        })
-        .filter(|bmo| bmo.is_some())
-        .map(|bms| bms.unwrap())
-        .collect();
-}
+            })
+            .filter(|bmo| bmo.is_some())
+            .map(|bms| bms.unwrap())
+            .collect::<Vec<BookMetadata>>();
+    }
 
-fn better_dup(old: &Book, new: &Book) -> bool {
-    if new.size > old.size {
-        true
-    } else {
-        false
+    //the potential issue here is there's a difference between "yes tis is definitely english" and "this is definitely NOT english"
+    //books with eg ambiguous title and no description won't be detected!
+    // so possibly way around that is to detect using ALL languages ?
+    fn is_english(&self, bm: &BookMetadata) -> bool {
+        return self
+            .detector
+            .detect_language_of(
+                bm.title.as_ref().unwrap_or(&"".to_string()).to_owned()
+                    + " "
+                    + bm.description.as_ref().unwrap_or(&"".to_string()),
+            )
+            .is_some();
+    }
+
+    fn better_dup(old: &Book, new: &Book) -> bool {
+        if new.size > old.size {
+            true
+        } else {
+            false
+        }
     }
 }
-
 fn parse_epub(book_loc: &str) -> Result<BookMetadata, Box<dyn Error>> {
     let mut doc = EpubDoc::new(&book_loc)?;
     let metadata = fs::metadata(&book_loc)?;
