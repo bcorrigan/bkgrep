@@ -29,10 +29,6 @@ pub fn scan_dirs(dirs: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
 
     // all books seen so far. For now store the location and fngers crossed don't run out of memory
     let seen_books: RwLock<HashMap<i64, Book>> = std::sync::RwLock::new(HashMap::new());
-    // the "best" duplicate books - that we want to *keep*
-    //The first dup we find - we determine best, print other as dup, and put the best in here
-    //when we detect anoter dup, we promote or relegate as necessary
-    let best_dup_books: RwLock<HashMap<i64, Book>> = std::sync::RwLock::new(HashMap::new());
     let mut book_batch = vec![];
 
     for dir in &dirs {
@@ -45,7 +41,7 @@ pub fn scan_dirs(dirs: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
                         book_batch.push(l.path().display().to_string());
 
                         if book_batch.len() % 10000 == 0 {
-                            process_batch(&seen_books, &best_dup_books, &book_batch);
+                            process_batch(&seen_books, &book_batch);
                         }
                         book_batch.clear();
                     }
@@ -57,18 +53,14 @@ pub fn scan_dirs(dirs: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         if book_batch.len() > 0 {
-            process_batch(&seen_books, &best_dup_books, &book_batch);
+            process_batch(&seen_books, &book_batch);
         }
     }
 
     Ok(())
 }
 
-fn process_batch(
-    seen_books: &RwLock<HashMap<i64, Book>>,
-    dups: &RwLock<HashMap<i64, Book>>,
-    book_batch: &Vec<String>,
-) {
+fn process_batch(seen_books: &RwLock<HashMap<i64, Book>>, book_batch: &Vec<String>) {
     let bms: Vec<BookMetadata> = book_batch
         .par_iter()
         .map(|book_path| match parse_epub(book_path) {
@@ -82,21 +74,14 @@ fn process_batch(
                     Some(bm)
                 } else {
                     //DUPLICATE DETECTED
-                    if !dups.read().unwrap().contains_key(&bm.id) {
-                        let dups_unlocked = dups.read().unwrap();
-                        let old_dup_bk = dups_unlocked.get(&bm.id).unwrap();
-                        if better_dup(old_dup_bk, &new_bk) {
-                            dups.write().unwrap().insert(bm.id, new_bk);
-                        }
+                    let seen_unlocked = seen_books.read().unwrap();
+                    let old_bk = seen_unlocked.get(&bm.id).unwrap().clone();
+                    drop(seen_unlocked);
+                    if better_dup(&old_bk, &new_bk) {
+                        println!("DUP:{}", old_bk.location);
+                        seen_books.write().unwrap().insert(bm.id, new_bk);
                     } else {
-                        let seen_unlocked = seen_books.read().unwrap();
-                        let old_bk = seen_unlocked.get(&bm.id).unwrap().clone();
-                        drop(seen_unlocked);
-                        if better_dup(&old_bk, &new_bk) {
-                            dups.write().unwrap().insert(bm.id, new_bk);
-                        } else {
-                            dups.write().unwrap().insert(bm.id, old_bk);
-                        }
+                        println!("DUP:{}", new_bk.location);
                     }
 
                     None
