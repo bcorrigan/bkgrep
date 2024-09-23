@@ -195,7 +195,7 @@ fn add_content(doc: &mut EpubDoc<std::io::BufReader<File>>, content: &mut String
     content.push_str(
         doc.get_current_str()
             .unwrap_or(("".to_string(), "".to_string()))
-            .1
+            .0
             .as_ref(),
     );
 }
