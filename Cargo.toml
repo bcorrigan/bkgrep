@@ -12,5 +12,7 @@ rayon = "^1.5"
 walkdir = "^2"
 itertools = "^0.13"
 lingua = "^1.6"
+rand = "^0.9.0-alpha"
+scraper = "^0.20"
 
 

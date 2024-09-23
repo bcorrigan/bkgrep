@@ -10,16 +10,26 @@ use std::path::Path;
 use std::process;
 use std::sync::RwLock;
 use std::time::SystemTime;
-use walkdir::WalkDir;
+use walkdir::{DirEntry, WalkDir};
 
 use lingua::Language::*;
 use lingua::LanguageDetector;
 use lingua::LanguageDetectorBuilder;
+use rand::prelude::*;
+use scraper::html::Html;
 //most essential book details for dedupping
 #[derive(Clone)]
 struct Book {
     location: String, //path to the book
     size: i64,        //how many bytes large is the book
+}
+
+fn is_hidden(entry: &DirEntry) -> bool {
+    entry
+        .file_name()
+        .to_str()
+        .map(|s| s.starts_with("."))
+        .unwrap_or(false)
 }
 
 pub struct Scanner {
@@ -50,7 +60,9 @@ impl Scanner {
         let mut book_batch = vec![];
 
         for dir in &self.dirs {
-            let walker = WalkDir::new(&dir).into_iter();
+            let walker = WalkDir::new(&dir)
+                .into_iter()
+                .filter_entry(|e| !is_hidden(e));
             for entry in walker {
                 match entry {
                     Ok(l) => {
@@ -127,14 +139,43 @@ impl Scanner {
     //books with eg ambiguous title and no description won't be detected!
     //That's why we must detect using using ALL languages
     fn is_english(&self, bm: &BookMetadata) -> bool {
-        match self.detector.detect_language_of(
-            bm.title.as_ref().unwrap_or(&"".to_string()).to_owned()
-                + " "
-                + bm.description.as_ref().unwrap_or(&"".to_string()),
-        ) {
-            Some(English) => true,
-            Some(_) => false,
-            None => true,
+        if bm.description.as_ref().is_some_and(|s| s.len() > 50) {
+            match self.detector.detect_language_of(
+                bm.title.as_ref().unwrap_or(&"".to_string()).to_owned()
+                    + " "
+                    + bm.description.as_ref().unwrap_or(&"".to_string()),
+            ) {
+                Some(English) => true,
+                Some(_) => false,
+                None => true,
+            }
+        } else {
+            //not enough information to be sure - inspect inside the book at a random point
+            //this is all prettyugly and hurried :/
+            let mut doc = EpubDoc::new(&bm.file).unwrap();
+            let mut content = String::new();
+            add_content(&mut doc, &mut content);
+            add_content(&mut doc, &mut content);
+            add_content(&mut doc, &mut content);
+            let mut cleaned = String::new();
+            let mut tref = String::new();
+
+            let fragdoc = Html::parse_fragment(&content);
+            for node in fragdoc.tree {
+                cleaned.push_str(match node {
+                    scraper::node::Node::Text(text) => {
+                        tref = text.text.to_string();
+                        &tref
+                    }
+                    _ => "",
+                });
+            }
+
+            match self.detector.detect_language_of(cleaned) {
+                Some(English) => true,
+                Some(_) => false,
+                None => true,
+            }
         }
     }
 
@@ -145,6 +186,18 @@ impl Scanner {
             false
         }
     }
+}
+
+fn add_content(doc: &mut EpubDoc<std::io::BufReader<File>>, content: &mut String) {
+    let rand_page = rand::thread_rng().gen_range(0..doc.get_num_pages());
+    doc.set_current_page(rand_page);
+    content.push_str(" ");
+    content.push_str(
+        doc.get_current_str()
+            .unwrap_or(("".to_string(), "".to_string()))
+            .1
+            .as_ref(),
+    );
 }
 fn parse_epub(book_loc: &str) -> Result<BookMetadata, Box<dyn Error>> {
     let mut doc = EpubDoc::new(&book_loc)?;
