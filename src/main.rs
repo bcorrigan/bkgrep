@@ -38,25 +38,27 @@ impl Hash for BookMetadata {
 }
 
 /// Find epub that match specific patterns (or not).
-/// The file locations of epubs that match are written to std out
+/// The file locations of epubs that match are written to std out.
+/// Intended to allow scanning a collection of epubs and listing all the duplicate and foreign epubs
+/// which can then be deleted.
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Cli {
-    /// Find epubs written in these given languages only
-    #[arg(short, long, default_value = ".", num_args=1.., value_parser)]
-    langs: Vec<String>,
+    /// Find epubs written in a foreign language ie. not english
+    #[arg(short, long, action)]
+    find_foreign: bool,
 
     /// Find epubs in these directories - directories are scanned in given order
     #[arg(short, long, default_value = ".", num_args=1.., value_parser)]
-    dirs: Vec<String>,
+    dir: Vec<String>,
 
-    /// FInd epubs which are duplicates. Only first and subsequent duplicates are reported
+    /// Find epubs which are duplicates. Epubs with the same author, title and publisher are considered identical, only the smallest are reported as duplicates
     #[arg(short, long, action)]
     dups: bool,
 }
 
 fn main() {
     let cli = Cli::parse();
-    let scanner = scanner::Scanner::new(cli.dirs);
+    let scanner = scanner::Scanner::new(cli.dir, cli.find_foreign);
     scanner.scan_dirs();
 }

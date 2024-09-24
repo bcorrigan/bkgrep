@@ -34,17 +34,22 @@ fn is_hidden(entry: &DirEntry) -> bool {
 
 pub struct Scanner {
     dirs: Vec<String>,
-    detector: LanguageDetector,
+    detector: Option<LanguageDetector>,
 }
 
 impl Scanner {
-    pub fn new(dirs: Vec<String>) -> Self {
-        Scanner {
-            dirs,
-            detector: LanguageDetectorBuilder::from_all_languages()
-                .with_minimum_relative_distance(0.9)
-                .build(),
-        }
+    pub fn new(dirs: Vec<String>, detect_lang: bool) -> Self {
+        let detector = if detect_lang {
+            Some(
+                LanguageDetectorBuilder::from_all_languages()
+                    .with_minimum_relative_distance(0.9)
+                    .build(),
+            )
+        } else {
+            None
+        };
+
+        Scanner { dirs, detector }
     }
 
     pub fn scan_dirs(&self) -> Result<(), Box<dyn std::error::Error>> {
@@ -139,43 +144,47 @@ impl Scanner {
     //books with eg ambiguous title and no description won't be detected!
     //That's why we must detect using using ALL languages
     fn is_english(&self, bm: &BookMetadata) -> bool {
-        if bm.description.as_ref().is_some_and(|s| s.len() > 50) {
-            match self.detector.detect_language_of(
-                bm.title.as_ref().unwrap_or(&"".to_string()).to_owned()
-                    + " "
-                    + bm.description.as_ref().unwrap_or(&"".to_string()),
-            ) {
-                Some(English) => true,
-                Some(_) => false,
-                None => true,
+        if let Some(detector) = &self.detector {
+            if bm.description.as_ref().is_some_and(|s| s.len() > 50) {
+                match detector.detect_language_of(
+                    bm.title.as_ref().unwrap_or(&"".to_string()).to_owned()
+                        + " "
+                        + bm.description.as_ref().unwrap_or(&"".to_string()),
+                ) {
+                    Some(English) => true,
+                    Some(_) => false,
+                    None => true,
+                }
+            } else {
+                //not enough information to be sure - inspect inside the book at a random point
+                //this is all prettyugly and hurried :/
+                let mut doc = EpubDoc::new(&bm.file).unwrap();
+                let mut content = String::new();
+                add_content(&mut doc, &mut content);
+                add_content(&mut doc, &mut content);
+                add_content(&mut doc, &mut content);
+                let mut cleaned = String::new();
+                let mut tref = String::new();
+
+                let fragdoc = Html::parse_fragment(&content);
+                for node in fragdoc.tree {
+                    cleaned.push_str(match node {
+                        scraper::node::Node::Text(text) => {
+                            tref = text.text.to_string();
+                            &tref
+                        }
+                        _ => "",
+                    });
+                }
+
+                match detector.detect_language_of(cleaned) {
+                    Some(English) => true,
+                    Some(_) => false,
+                    None => true,
+                }
             }
         } else {
-            //not enough information to be sure - inspect inside the book at a random point
-            //this is all prettyugly and hurried :/
-            let mut doc = EpubDoc::new(&bm.file).unwrap();
-            let mut content = String::new();
-            add_content(&mut doc, &mut content);
-            add_content(&mut doc, &mut content);
-            add_content(&mut doc, &mut content);
-            let mut cleaned = String::new();
-            let mut tref = String::new();
-
-            let fragdoc = Html::parse_fragment(&content);
-            for node in fragdoc.tree {
-                cleaned.push_str(match node {
-                    scraper::node::Node::Text(text) => {
-                        tref = text.text.to_string();
-                        &tref
-                    }
-                    _ => "",
-                });
-            }
-
-            match self.detector.detect_language_of(cleaned) {
-                Some(English) => true,
-                Some(_) => false,
-                None => true,
-            }
+            true
         }
     }
 
