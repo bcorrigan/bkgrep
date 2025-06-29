@@ -234,11 +234,10 @@ fn parse_epub(book_loc: &str) -> Result<BookMetadata, Box<dyn Error>> {
     Ok(bm)
 }
 
-fn get_first_fd(mdfield: &str, md: &HashMap<String, Vec<String>>) -> Option<String> {
-    match md.get(mdfield) {
-        Some(vec) => Some(vec.get(0).unwrap().clone()),
-        None => None,
-    }
+fn get_first_fd(mdfield: &str, md: &Vec<MetadataItem>) -> Option<String> {
+    md.iter()
+        .find(|item| item.property.eq_ignore_ascii_case(mdfield))
+        .map(|item| item.value.clone())
 }
 
 //Attempt to unmangle author names to be consistent
