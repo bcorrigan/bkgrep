@@ -1,5 +1,5 @@
 use crate::BookMetadata;
-use epub::doc::EpubDoc;
+use epub::doc::{EpubDoc, MetadataItem};
 use itertools::Itertools;
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -212,8 +212,8 @@ impl Scanner {
 }
 
 fn add_content(doc: &mut EpubDoc<std::io::BufReader<File>>, content: &mut String) {
-    let rand_page = rand::rng().random_range(0..doc.get_num_pages());
-    doc.set_current_page(rand_page);
+    let rand_page = rand::rng().random_range(0..doc.get_num_chapters());
+    doc.set_current_chapter(rand_page);
     content.push_str(" ");
     content.push_str(
         doc.get_current_str()
@@ -247,10 +247,10 @@ fn parse_epub(book_loc: &str) -> Result<BookMetadata, Box<dyn Error>> {
     Ok(bm)
 }
 
-fn get_first_fd(mdfield: &str, md: &HashMap<String, Vec<String>>) -> Option<String> {
+fn get_first_fd(mdfield: &str, md: &[MetadataItem]) -> Option<String> {
     md.iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case(mdfield))
-        .and_then(|(_, v)| v.first().cloned())
+        .find(|item| item.property.eq_ignore_ascii_case(mdfield))
+        .map(|item| item.value.clone())
 }
 
 //Attempt to unmangle author names to be consistent
