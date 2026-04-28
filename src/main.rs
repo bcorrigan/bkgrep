@@ -1,14 +1,13 @@
 mod scanner;
-use clap::{Parser, Subcommand};
+use clap::Parser;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
-use std::error::Error;
 use std::hash::{Hash, Hasher};
+use std::process;
 pub struct BookMetadata {
     id: i64,
     title: Option<String>,
     description: Option<String>,
-    publisher: Option<String>,
     creator: Option<String>,
     file: String,
     filesize: i64,
@@ -33,7 +32,7 @@ impl Hash for BookMetadata {
     where
         H: Hasher,
     {
-        (&self.title, &self.publisher, &self.creator).hash(state);
+        (&self.title, &self.creator).hash(state);
     }
 }
 
@@ -49,10 +48,10 @@ struct Cli {
     find_foreign: bool,
 
     /// Find epubs in these directories - directories are scanned in given order
-    #[arg(short, long, default_value = ".", num_args=1.., value_parser)]
+    #[arg(long, default_value = ".", num_args=1.., value_parser)]
     dir: Vec<String>,
 
-    /// Find epubs which are duplicates. Epubs with the same author, title and publisher are considered identical, only the smallest are reported as duplicates
+    /// Find epubs which are duplicates. Epubs with the same author & title are considered identical, however books with same author and title and a 5% size variance are retained seperately.
     #[arg(short, long, action)]
     dups: bool,
 }
@@ -60,5 +59,8 @@ struct Cli {
 fn main() {
     let cli = Cli::parse();
     let scanner = scanner::Scanner::new(cli.dir, cli.find_foreign);
-    scanner.scan_dirs();
+    if let Err(e) = scanner.scan_dirs() {
+        eprintln!("Error: {}", e);
+        process::exit(1);
+    }
 }

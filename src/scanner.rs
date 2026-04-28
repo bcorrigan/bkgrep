@@ -2,20 +2,19 @@ use crate::BookMetadata;
 use epub::doc::EpubDoc;
 use itertools::Itertools;
 use rayon::prelude::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
 use std::fs::File;
 use std::path::Path;
 use std::process;
 use std::sync::RwLock;
-use std::time::SystemTime;
 use walkdir::{DirEntry, WalkDir};
 
 use lingua::Language::*;
 use lingua::LanguageDetector;
 use lingua::LanguageDetectorBuilder;
-use rand::prelude::*;
+use rand::RngExt;
 use scraper::html::Html;
 //most essential book details for dedupping
 #[derive(Clone)]
@@ -61,7 +60,7 @@ impl Scanner {
         }
 
         // all books seen so far. For now store the location and fngers crossed don't run out of memory
-        let seen_books: RwLock<HashMap<i64, Book>> = std::sync::RwLock::new(HashMap::new());
+        let seen_books: RwLock<HashMap<i64, Vec<Book>>> = std::sync::RwLock::new(HashMap::new());
         let mut book_batch = vec![];
 
         for dir in &self.dirs {
@@ -94,50 +93,41 @@ impl Scanner {
             }
         }
 
+        let final_books = seen_books.into_inner().unwrap();
+        Self::report_dups(&final_books);
+
         Ok(())
     }
 
-    fn process_batch(&self, seen_books: &RwLock<HashMap<i64, Book>>, book_batch: &Vec<String>) {
+    fn process_batch(
+        &self,
+        seen_books: &RwLock<HashMap<i64, Vec<Book>>>,
+        book_batch: &Vec<String>,
+    ) {
         book_batch
             .par_iter()
-            .map(|book_path| match parse_epub(book_path) {
+            .for_each(|book_path| match parse_epub(book_path) {
                 Ok(bm) => {
                     if self.is_english(&bm) {
                         let new_bk = Book {
                             location: book_path.clone(),
                             size: bm.filesize,
                         };
-                        if !seen_books.read().unwrap().contains_key(&bm.id) {
-                            seen_books.write().unwrap().insert(bm.id, new_bk);
-                            Some(bm)
-                        } else {
-                            //DUPLICATE DETECTED
-                            let seen_unlocked = seen_books.read().unwrap();
-                            let old_bk = seen_unlocked.get(&bm.id).unwrap().clone();
-                            drop(seen_unlocked);
-                            if Self::better_dup(&old_bk, &new_bk) {
-                                println!("DUP:{}", old_bk.location);
-                                seen_books.write().unwrap().insert(bm.id, new_bk);
-                            } else {
-                                println!("DUP:{}", new_bk.location);
-                            }
-
-                            None
-                        }
+                        seen_books
+                            .write()
+                            .unwrap()
+                            .entry(bm.id)
+                            .or_insert_with(Vec::new)
+                            .push(new_bk);
                     } else {
                         println!("FRN:{}", book_path);
-                        None
                     }
                 }
                 Err(err) => {
                     eprintln!("Error with {}: {:?}", book_path, err);
                     println!("ERROR:{}", book_path);
-                    None
                 }
-            })
-            .filter(|bmo| bmo.is_some())
-            .map(|bms| bms.unwrap())
-            .collect::<Vec<BookMetadata>>();
+            });
     }
 
     //the potential issue here is there's a difference between "yes tis is definitely english" and "this is definitely NOT english"
@@ -164,17 +154,12 @@ impl Scanner {
                 add_content(&mut doc, &mut content);
                 add_content(&mut doc, &mut content);
                 let mut cleaned = String::new();
-                let mut tref = String::new();
 
                 let fragdoc = Html::parse_fragment(&content);
                 for node in fragdoc.tree {
-                    cleaned.push_str(match node {
-                        scraper::node::Node::Text(text) => {
-                            tref = text.text.to_string();
-                            &tref
-                        }
-                        _ => "",
-                    });
+                    if let scraper::node::Node::Text(text) = node {
+                        cleaned.push_str(&text.text);
+                    }
                 }
 
                 match detector.detect_language_of(cleaned) {
@@ -188,17 +173,46 @@ impl Scanner {
         }
     }
 
-    fn better_dup(old: &Book, new: &Book) -> bool {
-        if new.size > old.size {
-            true
-        } else {
-            false
+    // Books are hashed by title and creator alone, so a single id may have many books behind it
+    // (same author/title, different publishers/editions). We aggressively dedupe within a 5% size
+    // band: the largest book in each band is kept, the rest are reported as DUP. Books outside the
+    // band are treated as a substantially different edition and retained separately.
+    //
+    // We sort all books for an id by size ascending and walk left-to-right, greedily growing a
+    // band while the next book is within 5% of the band's smallest member. This avoids the
+    // pairwise-swap pathology where a chain of close-sized books all collapse to the largest one.
+    fn report_dups(seen_books: &HashMap<i64, Vec<Book>>) {
+        for dups in seen_books.values() {
+            if dups.len() <= 1 {
+                continue;
+            }
+            let mut sorted: Vec<&Book> = dups.iter().collect();
+            sorted.sort_by_key(|b| b.size);
+
+            let mut i = 0;
+            while i < sorted.len() {
+                let band_max = (sorted[i].size as f64 * 1.05) as i64;
+                let mut j = i;
+                let mut max_idx = i;
+                while j < sorted.len() && sorted[j].size <= band_max {
+                    if sorted[j].size > sorted[max_idx].size {
+                        max_idx = j;
+                    }
+                    j += 1;
+                }
+                for k in i..j {
+                    if k != max_idx {
+                        println!("DUP:{}", sorted[k].location);
+                    }
+                }
+                i = j;
+            }
         }
     }
 }
 
 fn add_content(doc: &mut EpubDoc<std::io::BufReader<File>>, content: &mut String) {
-    let rand_page = rand::thread_rng().gen_range(0..doc.get_num_pages());
+    let rand_page = rand::rng().random_range(0..doc.get_num_pages());
     doc.set_current_page(rand_page);
     content.push_str(" ");
     content.push_str(
@@ -209,7 +223,7 @@ fn add_content(doc: &mut EpubDoc<std::io::BufReader<File>>, content: &mut String
     );
 }
 fn parse_epub(book_loc: &str) -> Result<BookMetadata, Box<dyn Error>> {
-    let mut doc = EpubDoc::new(&book_loc)?;
+    let doc = EpubDoc::new(&book_loc)?;
     let metadata = fs::metadata(&book_loc)?;
 
     let file = match Path::new(&book_loc).canonicalize() {
@@ -224,7 +238,6 @@ fn parse_epub(book_loc: &str) -> Result<BookMetadata, Box<dyn Error>> {
         id: 0i64,
         title: get_first_fd("title", &doc.metadata),
         description: get_first_fd("description", &doc.metadata),
-        publisher: get_first_fd("publisher", &doc.metadata),
         creator: get_first_fd("creator", &doc.metadata).map(unmangle_creator),
         file,
         filesize: metadata.len() as i64,
